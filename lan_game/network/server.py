@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-from lan_game.game_loop import GameLoop
+from lan_game.game_state import GameState
 
 
 @dataclass
@@ -36,10 +36,10 @@ class LanServer:
     def __init__(self, host: str = "0.0.0.0", port: int = 9000, max_players: int = 4):
         self.host = host
         self.port = port
-        self.loop = GameLoop()
         self._server: Optional[asyncio.AbstractServer] = None
         self._players: Dict[str, PlayerSession] = {}
         self.max_players = max_players
+        self.state = GameState(max_players=max_players)
 
     async def start(self):
         """Start accepting connections and ticking the world."""
@@ -47,18 +47,22 @@ class LanServer:
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
         addr = ", ".join(str(sock.getsockname()) for sock in self._server.sockets)
         print(f"Server listening on {addr}")
-        asyncio.create_task(self.loop.run(self._tick_world))
+        asyncio.create_task(self.state.loop(self._tick_world))
 
         async with self._server:
             await self._server.serve_forever()
 
-    async def _tick_world(self, elapsed_game_minutes: float):
-        """Broadcast a heartbeat containing the elapsed time."""
+    async def _tick_world(self, elapsed_seconds: float):
+        """Drive the game simulation and send per-player snapshots."""
 
         if not self._players:
             return
 
-        await self._fan_out({"type": "tick", "elapsed_minutes": elapsed_game_minutes})
+        eliminated = self.state.tick(elapsed_seconds)
+        if eliminated:
+            await self._fan_out({"type": "eliminated", "players": eliminated})
+
+        await self._fan_out_state()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         address = writer.get_extra_info("peername")
@@ -83,6 +87,8 @@ class LanServer:
             self._players[name] = session
             player_name = name
             await session.send({"type": "welcome", "message": f"joined as {name}"})
+            spawn = self.state.add_player(name)
+            await session.send({"type": "spawn", **spawn})
             await self._broadcast({"type": "join", "name": name}, exclude=name)
 
             while not reader.at_eof():
@@ -113,12 +119,40 @@ class LanServer:
             return
 
         payload["sender"] = sender
-        await self._broadcast(payload, exclude=None)
+        msg_type = payload.get("type")
+        if msg_type == "chat":
+            await self._broadcast(payload, exclude=None)
+        elif msg_type == "move":
+            direction = payload.get("direction")
+            self.state.queue_move(sender, direction)
+        else:
+            await self._broadcast(payload, exclude=None)
 
     async def _broadcast(self, payload: dict, exclude: Optional[str]):
         recipients = [(name, session) for name, session in list(self._players.items()) if name != exclude]
         if recipients:
             await self._fan_out(payload, recipients)
+
+    async def _fan_out_state(self):
+        """Send personalized snapshots to every player."""
+
+        tasks = []
+        names = []
+        for name, session in list(self._players.items()):
+            snapshot = self.state.snapshot_for(name)
+            if not snapshot:
+                continue
+            tasks.append(asyncio.create_task(session.send(snapshot)))
+            names.append(name)
+
+        if not tasks:
+            return
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name, result in zip(names, results):
+            if isinstance(result, Exception):
+                print(f"Dropping player {name} after send failure: {result}")
+                self._disconnect(name)
 
     async def _fan_out(self, payload: dict, recipients: Optional[list[tuple[str, PlayerSession]]] = None):
         targets = recipients or list(self._players.items())
@@ -141,6 +175,7 @@ class LanServer:
         session = self._players.pop(name, None)
         if not session:
             return
+        self.state.remove_player(name)
         try:
             session.writer.close()
         finally:

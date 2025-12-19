@@ -26,7 +26,7 @@ async def run_client(args):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LAN game sandbox runner")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     server_parser = subparsers.add_parser("server", help="Run the LAN server")
     server_parser.add_argument("--host", default="0.0.0.0")

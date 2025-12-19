@@ -33,6 +33,14 @@ rules are easy to extend.
    python -m lan_game.renderer.pygame_renderer
    ```
 
+5. Launch the interactive lobby (no arguments opens the menu):
+   ```bash
+   python main.py
+   ```
+   - Choose **게임 시작 - 호스트** to start hosting; your address is shown and a Pygame lobby opens.
+   - Choose **게임 시작 - 참여** to join an existing host by entering its address.
+   - The first client in the lobby sees a **Start** button to begin the round. All clients can chat, see who’s present (up to 4), and exit from the lobby window.
+
 ### Gameplay rules
 - One player becomes the tagger; everyone else is a runner. Tagger speed is 1.5x; runners move at 1x (1 tile per 0.5s at 1x).
 - Tagger vision: 180° in the facing direction, up to 5 tiles away, walls block visibility.

@@ -40,6 +40,7 @@ class LanServer:
         self._players: Dict[str, PlayerSession] = {}
         self.max_players = max_players
         self.state = GameState(max_players=max_players)
+        self._host_player: Optional[str] = None
 
     async def start(self):
         """Start accepting connections and ticking the world."""
@@ -124,6 +125,9 @@ class LanServer:
         msg_type = payload.get("type")
         if msg_type == "chat":
             await self._broadcast(payload, exclude=None)
+        elif msg_type == "start" and sender == self._host_player:
+            if self.state.start():
+                await self._fan_out({"type": "game_start", "starter": sender})
         elif msg_type == "move":
             direction = payload.get("direction")
             self.state.queue_move(sender, direction)
@@ -144,6 +148,8 @@ class LanServer:
             snapshot = self.state.snapshot_for(name)
             if not snapshot:
                 continue
+            snapshot["players_present"] = list(self._players.keys())
+            snapshot["host"] = self._host_player
             tasks.append(asyncio.create_task(session.send(snapshot)))
             names.append(name)
 
@@ -178,6 +184,8 @@ class LanServer:
         if not session:
             return
         self.state.remove_player(name)
+        if self._host_player == name:
+            self._host_player = next(iter(self._players), None)
         try:
             session.writer.close()
         finally:

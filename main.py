@@ -43,27 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    raw_args = list(argv) if argv is not None else None
-    if raw_args is None:
-        raw_args = []
-
-    if raw_args:
+    if argv:
         parser = build_parser()
+        args = parser.parse_args(argv)
+
         try:
-            args = parser.parse_args(raw_args)
-        except SystemExit:
-            # Fallback to the interactive menu if parsing fails or subcommand missing.
-            asyncio.run(interactive_menu())
-            return
+            asyncio.run(args.func(args))
+        except KeyboardInterrupt:
+            print("Shutting down")
+        return
 
-        if args.command:
-            try:
-                asyncio.run(args.func(args))
-            except KeyboardInterrupt:
-                print("Shutting down")
-            return
-
-    # No arguments (or parse failed) — show interactive menu.
     asyncio.run(interactive_menu())
 
 

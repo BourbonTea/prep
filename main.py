@@ -6,6 +6,7 @@ import asyncio
 import socket
 from contextlib import suppress
 
+from lan_game.client_app import run_lobby
 from lan_game.network.client import LanClient
 from lan_game.network.server import LanServer
 

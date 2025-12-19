@@ -86,6 +86,8 @@ class LanServer:
             session = PlayerSession(name=name, reader=reader, writer=writer, address=peer_display)
             self._players[name] = session
             player_name = name
+            if self._host_player is None:
+                self._host_player = name
             await session.send({"type": "welcome", "message": f"joined as {name}"})
             spawn = self.state.add_player(name)
             await session.send({"type": "spawn", **spawn})

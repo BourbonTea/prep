@@ -105,7 +105,6 @@ class GameState:
         self.max_players = max_players
         self.time_remaining = TIME_LIMIT_SECONDS
         self.loop_task: Optional[asyncio.Task] = None
-        self.started = False
 
     async def loop(self, tick):
         """Simple fixed-step loop using real seconds."""
@@ -149,9 +148,6 @@ class GameState:
     def tick(self, elapsed_seconds: float) -> List[str]:
         """Advance movement, resolve captures, and countdown timer."""
 
-        if not self.started:
-            return []
-
         self.time_remaining = max(0.0, self.time_remaining - elapsed_seconds)
         eliminated_now: List[str] = []
 
@@ -181,12 +177,6 @@ class GameState:
                 eliminated_now.append(player.name)
 
         return eliminated_now
-
-    def start(self) -> bool:
-        if self.started:
-            return False
-        self.started = True
-        return True
 
     def snapshot_for(self, name: str) -> Optional[dict]:
         viewer = self.players.get(name)
@@ -220,7 +210,6 @@ class GameState:
             "time_remaining": self.time_remaining,
             "eliminated": viewer.eliminated,
             "winner": self._winner(),
-            "started": self.started,
         }
 
     def _winner(self) -> Optional[str]:

@@ -44,27 +44,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    raw_args = list(argv) if argv is not None else None
-    if raw_args is None:
-        raw_args = []
-
-    if raw_args:
+    if argv:
         parser = build_parser()
+        args = parser.parse_args(argv)
+
         try:
-            args = parser.parse_args(raw_args)
-        except SystemExit:
-            # Fallback to the interactive menu if parsing fails or subcommand missing.
-            asyncio.run(interactive_menu())
-            return
+            asyncio.run(args.func(args))
+        except KeyboardInterrupt:
+            print("Shutting down")
+        return
 
-        if args.command:
-            try:
-                asyncio.run(args.func(args))
-            except KeyboardInterrupt:
-                print("Shutting down")
-            return
-
-    # No arguments (or parse failed) — show interactive menu.
     asyncio.run(interactive_menu())
 
 
@@ -118,7 +107,7 @@ async def host_flow():
     try:
         display_addresses(port)
         await asyncio.sleep(0.1)  # let server start
-        await run_lobby(name=nickname, host="127.0.0.1", port=port, is_host=True)
+        await lobby_chat(nickname, host="127.0.0.1", port=port)
     finally:
         server_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -129,7 +118,7 @@ async def join_flow():
     host = input("접속할 호스트 주소를 입력하세요 (예: 192.168.0.10): ").strip() or "127.0.0.1"
     port = prompt_int("호스트 포트 (기본 9000): ", default=9000)
     nickname = pick_nickname()
-    await run_lobby(name=nickname, host=host, port=port, is_host=False)
+    await lobby_chat(nickname, host=host, port=port)
 
 
 def display_addresses(port: int):
@@ -162,5 +151,45 @@ def prompt_int(prompt: str, default: int) -> int:
 
 
 async def lobby_chat(nickname: str, host: str, port: int):
-    # deprecated in favor of Pygame lobby
-    await run_lobby(name=nickname, host=host, port=port, is_host=False)
+    client = LanClient(name=nickname, host=host, port=port)
+
+    async def listener():
+        async def printer(message: dict):
+            msg_type = message.get("type")
+            sender = message.get("name") or message.get("sender") or "server"
+            content = message.get("message") or message.get("text") or ""
+
+            if msg_type == "welcome":
+                print(f"[알림] {content}")
+            elif msg_type == "join":
+                print(f"[알림] {message.get('name')} 님이 입장했습니다.")
+            elif msg_type == "leave":
+                print(f"[알림] {message.get('name')} 님이 퇴장했습니다.")
+            elif msg_type == "tick":
+                return
+            else:
+                print(f"[{sender}] {content}")
+
+        await client.listen(printer)
+
+    try:
+        await client.connect()
+        print(f"\n{host}:{port} 로 연결되었습니다. '/quit'으로 로비를 나갑니다.")
+        listener_task = asyncio.create_task(listener())
+
+        while True:
+            line = await asyncio.get_event_loop().run_in_executor(None, input, "")
+            if line.strip() == "/quit":
+                break
+            if line.strip():
+                await client.send_action({"type": "chat", "text": line.strip()})
+
+    except Exception as exc:  # noqa: BLE001 user-facing feedback
+        print(f"연결 중 오류가 발생했습니다: {exc}")
+    finally:
+        await client.close()
+        with suppress(asyncio.CancelledError):
+            if "listener_task" in locals():
+                listener_task.cancel()
+                await listener_task
+        print("로비에서 나왔습니다.")

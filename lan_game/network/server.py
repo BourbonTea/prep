@@ -33,12 +33,13 @@ class PlayerSession:
 class LanServer:
     """Minimal LAN server for the game sandbox."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 9000):
+    def __init__(self, host: str = "0.0.0.0", port: int = 9000, max_players: int = 4):
         self.host = host
         self.port = port
         self.loop = GameLoop()
         self._server: Optional[asyncio.AbstractServer] = None
         self._players: Dict[str, PlayerSession] = {}
+        self.max_players = max_players
 
     async def start(self):
         """Start accepting connections and ticking the world."""
@@ -57,8 +58,7 @@ class LanServer:
         if not self._players:
             return
 
-        payload = {"type": "tick", "elapsed_minutes": elapsed_game_minutes}
-        await asyncio.gather(*(player.send(payload) for player in self._players.values()))
+        await self._fan_out({"type": "tick", "elapsed_minutes": elapsed_game_minutes})
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         address = writer.get_extra_info("peername")
@@ -72,6 +72,9 @@ class LanServer:
             name = join_data.get("name")
             if not name:
                 raise ValueError("missing player name")
+
+            if len(self._players) >= self.max_players:
+                raise ValueError("lobby full")
 
             if name in self._players:
                 raise ValueError("name already taken")
@@ -89,9 +92,18 @@ class LanServer:
                 await self._route_message(name, line)
         except Exception as exc:  # noqa: BLE001 broad ok for network boundary
             print(f"Error handling {peer_display}: {exc}")
+            if player_name is None and not writer.is_closing():
+                try:
+                    writer.write(json.dumps({"type": "error", "message": str(exc)}) + "\n")
+                    await writer.drain()
+                except Exception:  # noqa: BLE001 best-effort error reporting
+                    pass
         finally:
             if player_name:
                 self._disconnect(player_name)
+            elif not writer.is_closing():
+                writer.close()
+                await writer.wait_closed()
 
     async def _route_message(self, sender: str, raw: bytes):
         try:
@@ -104,14 +116,26 @@ class LanServer:
         await self._broadcast(payload, exclude=None)
 
     async def _broadcast(self, payload: dict, exclude: Optional[str]):
-        tasks = []
-        for name, session in list(self._players.items()):
-            if name == exclude:
-                continue
-            tasks.append(session.send(payload))
+        recipients = [(name, session) for name, session in list(self._players.items()) if name != exclude]
+        if recipients:
+            await self._fan_out(payload, recipients)
 
-        if tasks:
-            await asyncio.gather(*tasks)
+    async def _fan_out(self, payload: dict, recipients: Optional[list[tuple[str, PlayerSession]]] = None):
+        targets = recipients or list(self._players.items())
+        if not targets:
+            return
+
+        tasks = []
+        names = []
+        for name, player in targets:
+            tasks.append(asyncio.create_task(player.send(payload)))
+            names.append(name)
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name, result in zip(names, results):
+            if isinstance(result, Exception):
+                print(f"Dropping player {name} after send failure: {result}")
+                self._disconnect(name)
 
     def _disconnect(self, name: str):
         session = self._players.pop(name, None)
